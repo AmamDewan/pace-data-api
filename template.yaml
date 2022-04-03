@@ -1,0 +1,369 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  data-api
+
+  POC implimentation for data-api
+
+Globals:
+  Function:
+    Timeout: 3
+    Handler: main.handler
+
+Parameters:
+  Environment:
+    Type: String
+    Description: The environment tag is used to designate the environment stage of the associated AWS resources
+    Default: Development
+    AllowedValues:
+      - Development
+      - Staging
+      - Production
+
+  Prefix:
+    Type: String
+    Description: The prefix of all resources
+    Default: pace-data-api
+
+Mappings:
+  Environment:
+    Development:
+      AbbrLowerCase: dev
+      AbbrUpperCase: DEV
+
+    Staging:
+      AbbrLowerCase: stg
+      AbbrUpperCase: STG
+
+    Production:
+      AbbrLowerCase: prod
+      AbbrUpperCase: PROD
+
+Conditions:
+  IsDevEnv: !Equals [!Ref Environment, "Development"]
+  IsStgEnv: !Equals [!Ref Environment, "Staging"]
+  IsProdEnv: !Equals [!Ref Environment, "Production"]
+
+
+Resources:
+  # Cognito
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: CognitoPool
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      # using client id will make the domain unique
+      Domain: !Sub paceapp-data-api-${CognitoUserPoolClient}
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPoolClient
+  CognitoUserPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: eqinix
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPool
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - email
+        - openid
+      CallbackURLs:
+        - 'http://localhost'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+    DependsOn:
+      - CognitoUserPool
+
+
+  # Databases
+  PolicyDDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Join
+        - "-"
+        - - !Ref Prefix
+          - policy-store
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      Tags:
+        - Key: Environment
+          Value: !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      AttributeDefinitions:
+        - AttributeName: "group"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "group"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+  DDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Join
+        - "-"
+        - - !Ref Prefix
+          - database
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      Tags:
+        - Key: Environment
+          Value: !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: InverseIndex
+          KeySchema:
+            - AttributeName: SK
+              KeyType: HASH
+            - AttributeName: PK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+
+  # Api
+  ApiGatewayDataApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Join
+        - "-"
+        - - !Ref Prefix
+          - api
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayDataApi
+      ParentId: !GetAtt ApiGatewayDataApi.RootResourceId
+      PathPart: "{proxy+}"
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: "ANY"
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGatewayDataApi
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayLambdaAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiFunction.Arn}/invocations
+    DependsOn: ApiGatewayLambdaAuthorizer
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref ApiGatewayDataApi
+      StageName: !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      Description: protected api
+    DependsOn:
+      - ApiGatewayLambdaAuthorizer
+      - ApiGatewayMethod
+  ApiGatewayLambdaAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Join
+        - "-"
+        - - !Ref Prefix
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+          - lambda-authorizer
+      RestApiId: !Ref ApiGatewayDataApi
+      Type: REQUEST
+      IdentitySource: method.request.header.Authorization
+      AuthorizerResultTtlInSeconds: '300'
+      AuthorizerCredentials: !GetAtt ApiGatewayLambdaAuthorizerIAMRole.Arn
+      AuthorizerUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerFunction.Arn}/invocations
+
+  # Functions
+  DataApiFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: !Join
+        - "-"
+        - - !Ref Prefix
+          - function
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      Description: Test lambda function
+      CodeUri: data-api-lambda/
+      Runtime: python3.9
+      Role: !GetAtt ApiServiceIAMRole.Arn
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:017000801446:layer:AWSLambdaPowertoolsPython:16
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          DDB_TABLE_NAME: !Ref DDBTable
+  DataApiFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt DataApiFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+
+
+  LambdaAuthorizerFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: !Join
+        - "-"
+        - - !Ref Prefix
+          - authorizer-function
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+      Description: Test lambda function
+      CodeUri: authorizer-lambda/
+      Runtime: python3.9
+      Role: !GetAtt LambdaAuthorizerIAMRole.Arn
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref PolicyDDBTable
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+
+  # Identity
+
+  ApiServiceIAMPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref ApiServiceIAMRole
+      PolicyName: ApiServiceIAMPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:Admin*
+            Resource: !GetAtt CognitoUserPool.Arn
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DataApiFunction:*
+  ApiServiceIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join
+        - "-"
+        - - !Ref Prefix
+          - !FindInMap [Environment, !Ref Environment, "AbbrLowerCase"]
+          - api-role
+      AssumeRolePolicyDocument: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+            }
+          ]
+        }
+  LambdaAuthorizerIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      Roles:
+        - !Ref LambdaAuthorizerIAMRole
+      PolicyName: CustomAuthIAMPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:*
+            Resource: !GetAtt CognitoUserPool.Arn
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/LambdaAuthorizerFunction:*
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+            Resource: !GetAtt PolicyDDBTable.Arn
+  LambdaAuthorizerIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: CustomAuthIAMRole
+      AssumeRolePolicyDocument: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+            }
+          ]
+        }
+  ApiGatewayLambdaAuthorizerIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: ApiGatewayCustomAuthIAMPolicy
+      Roles:
+        - !Ref ApiGatewayLambdaAuthorizerIAMRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'lambda:InvokeFunction'
+            Resource: !GetAtt LambdaAuthorizerFunction.Arn
+  ApiGatewayLambdaAuthorizerIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: ApiGatewayCustomAuthIAMRole
+      AssumeRolePolicyDocument: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "Service": "apigateway.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+            }
+          ]
+        }
+
+Outputs:
+  ApiGatewayDataApi:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ApiGatewayDataApi}.execute-api.${AWS::Region}.amazonaws.com/"
