@@ -16,5 +16,6 @@ def catch_all_route():
 
 
 def handler(event, context):
-
+    print(context)
+    print(event)
     return app.resolve(event, context)

@@ -132,8 +132,7 @@ def validate_token(token):
             break
 
     if key_index == -1:
-        print('Public key not found in jwks.json')
-        return False
+        raise Exception('Public key not found in jwks.json')
 
     # construct the public key
     public_key = jwk.construct(keys[key_index])
@@ -147,8 +146,7 @@ def validate_token(token):
 
     # verify the signature
     if not public_key.verify(message.encode("utf8"), decoded_signature):
-        print('Signature verification failed')
-        return False
+        raise Exception('Signature verification failed')
 
     print('Signature successfully verified')
 
@@ -158,13 +156,11 @@ def validate_token(token):
 
     # additionally we can verify the token expiration
     if time.time() > claims['exp']:
-        print('Token is expired')
-        return False
+        raise Exception('Token is expired')
 
     # and the Audience  (use claims['client_id'] if verifying an access token)
     if claims['client_id'] != COGNITO_APP_CLIENT_ID:
-        print('Token was not issued for this audience')
-        return False
+        raise Exception('Token was not issued for this audience')
 
     # now we can use the claims
     print(claims)

@@ -55,7 +55,7 @@ Resources:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
       # using client id will make the domain unique
-      Domain: !Sub paceapp-data-api-${CognitoUserPoolClient}
+      Domain: !Sub paceapp-${CognitoUserPoolClient}
       UserPoolId: !Ref CognitoUserPool
     DependsOn:
       - CognitoUserPoolClient
@@ -161,7 +161,7 @@ Resources:
     Properties:
       RestApiId: !Ref ApiGatewayDataApi
       ParentId: !GetAtt ApiGatewayDataApi.RootResourceId
-      PathPart: "{proxy+}"
+      PathPart: "{api+}"
   ApiGatewayMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -267,7 +267,7 @@ Resources:
               - logs:CreateLogGroup
               - logs:CreateLogStream
               - logs:PutLogEvents
-            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DataApiFunction:*
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
   ApiServiceIAMRole:
     Type: AWS::IAM::Role
     Properties:
@@ -308,7 +308,7 @@ Resources:
               - logs:CreateLogGroup
               - logs:CreateLogStream
               - logs:PutLogEvents
-            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/LambdaAuthorizerFunction:*
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
           - Effect: Allow
             Action:
               - dynamodb:BatchGetItem
